@@ -338,7 +338,6 @@ class SAMWidget(Container):
         preds = mask_gen.generate(self._image)
 
         # 중복 제거 및 필터링
-        preds = self.filter_duplicate_masks(preds, iou_thresh=0.9)
         preds = self.filter_large_uniform_masks(preds, self._image)
         
         # 객체 마스크 생성
@@ -347,7 +346,7 @@ class SAMWidget(Container):
             object_mask |= pred["segmentation"]
 
         # dilate된 마스크 (LaMa용)
-        kernel = np.ones((9,9 ), np.uint8)
+        kernel = np.ones((8,8 ), np.uint8)
         dilated_mask = cv2.dilate(object_mask.astype(np.uint8), kernel, iterations=2).astype(bool)
 
         background_mask = ~object_mask
@@ -469,24 +468,8 @@ class SAMWidget(Container):
             filtered.append(pred)
         return filtered
     
-    def filter_duplicate_masks(self, preds, iou_thresh=0.9):
-        def compute_iou(mask1, mask2):
-            intersection = np.logical_and(mask1, mask2).sum()
-            union = np.logical_or(mask1, mask2).sum()
-            return intersection / union if union != 0 else 0.0
-        preds_sorted = sorted(preds, key=lambda x: -x["predicted_iou"])
-        filtered = []
-        for pred in preds_sorted:
-            is_duplicate = False
-            for kept in filtered:
-                if compute_iou(pred["segmentation"], kept["segmentation"]) > iou_thresh:
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                filtered.append(pred)
 
-        return filtered
-    
+
     def _on_confirm_mask(self, _: Optional[Any] = None) -> None:
         if not self._confirm_mask_btn.enabled:
             return
@@ -526,10 +509,28 @@ class SAMWidget(Container):
                 
                 # RGB 값을 0~1 범위로 정규화
                 face_color = (r_mode / 255.0, g_mode / 255.0, b_mode / 255.0)
-                edge_color = (0, 0, 0)  # 검정색
                 
-                # 현재 객체의 모든 contours 추가
+                # 각 contour마다 개별적으로 처리
                 for contour in contours:
+                    # contour 좌표를 정수로 변환
+                    contour_int = contour.astype(int)
+                    
+                    # 현재 contour의 경계선 색상 수집
+                    boundary_colors = []
+                    for y, x in contour_int:
+                        if 0 <= y < self._image.shape[0] and 0 <= x < self._image.shape[1]:
+                            boundary_colors.append(self._image[y, x])
+                    
+                    # 현재 contour의 경계선 색상 최빈값 계산
+                    if boundary_colors:
+                        boundary_strs = [f"{r},{g},{b}" for r, g, b in boundary_colors]
+                        most_common_boundary = mode(boundary_strs, keepdims=False).mode
+                        r_edge, g_edge, b_edge = map(int, most_common_boundary.split(','))
+                        edge_color = (r_edge / 255.0, g_edge / 255.0, b_edge / 255.0)
+                    else:
+                        edge_color = face_color  # 경계선 색상을 찾지 못한 경우 face_color 사용
+                    
+                    # 현재 contour 추가
                     polygons.append(contour)
                     face_colors.append(face_color)
                     edge_colors.append(edge_color)
@@ -567,11 +568,13 @@ class SAMWidget(Container):
             # 마스크 초기화
             self._mask_layer.data = np.zeros_like(mask)
 
+
         self._confirm_mask_btn.enabled = False
         self._cancel_annot_btn.enabled = False
         self._pts_layer.data = []
         self._boxes_layer.data = []
         self._logits = None
+
 
     def _cancel_annot(self, _: Optional[Any] = None) -> None:
         # boxes must be reset first because of how of points data update signal
@@ -591,3 +594,23 @@ def cleanup():
             app.quit()
     except Exception as e:
         print(f"Cleanup error: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
