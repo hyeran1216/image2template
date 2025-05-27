@@ -3,22 +3,6 @@ import os
 from pathlib import Path
 import shutil
 
-def copy_lama_files():
-    """LAMA 프로젝트 파일을 패키지 디렉토리로 복사"""
-    src_lama = Path("C:/Users/kimin/ML/napari-segment-anything-main_1/lama")
-    if not src_lama.exists():
-        print(f"Warning: LAMA directory not found at {src_lama}")
-        return
-    
-    # LAMA 파일을 패키지 디렉토리로 복사
-    dst_lama = Path("src/napari_segment_anything/lama")
-    if dst_lama.exists():
-        shutil.rmtree(dst_lama)
-    print(f"Copying LAMA files from {src_lama} to {dst_lama}")
-    shutil.copytree(src_lama, dst_lama)
-
-# LAMA 파일 복사
-copy_lama_files()
 
 setup(
     name="napari-segment-anything",

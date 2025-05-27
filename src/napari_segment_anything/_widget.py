@@ -37,31 +37,6 @@ from .sd_inpaint import (
 
 # from segment_anything.utils.transforms import ResizeLongestSide
 
-def inpaint_background(image: np.ndarray, background_mask: np.ndarray) -> np.ndarray:
-    """
-    배경을 인페인팅하는 함수
-    
-    Args:
-        image: 입력 이미지 [0, 255], uint8, shape (H, W, 3)
-        background_mask: 배경 마스크 [True=배경], bool, shape (H, W)
-    
-    Returns:
-        inpainted: 인페인팅된 이미지 [0, 255], uint8, shape (H, W, 3)
-    """
-    # 마스크 반전 (객체 영역을 1로)
-    object_mask = ~background_mask
-    
-    # 마스크 전처리
-    mask = object_mask.astype(np.uint8) * 255
-    
-    # 마스크 dilate로 경계 부분 보정 (더 큰 커널 사용)
-    kernel = np.ones((3,3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
-    
-    # Navier-Stokes 알고리즘으로 인페인팅 (더 큰 반경)
-    result = cv2.inpaint(image, mask, 15, cv2.INPAINT_NS)
-    
-    return result
 
 class SAMWidget(Container):
     _sam: Sam
@@ -250,34 +225,41 @@ class SAMWidget(Container):
             return
         
         shapes_layer = self._viewer.layers["Object Polygons"]
-        if len(shapes_layer.selected_data) != 1:
-            print("❌ polygon 하나만 선택해주세요.")
+        selected_shapes = list(shapes_layer.selected_data)
+        if not selected_shapes:
+            print("❌ export할 객체를 선택해주세요.")
             return
         
-        selected_index = list(shapes_layer.selected_data)[0]
-        polygon = shapes_layer.data[selected_index]
-        
-        # polygon → mask
-        mask = polygon2mask(self._image.shape[:2], polygon)
-        
-        # 원본 이미지에서 마스크 적용
-        masked = self._image.copy()
-        masked[~mask] = 0
-        
-        # bounding box로 crop
-        y_coords, x_coords = np.where(mask)
-        min_y, max_y = y_coords.min(), y_coords.max()
-        min_x, max_x = x_coords.min(), x_coords.max()
-        cropped = masked[min_y:max_y + 1, min_x:max_x + 1]
-        
-        # 저장 다이얼로그
-        filename, _ = QFileDialog.getSaveFileName(
-            caption="Save Selected Object",
-            filter="Image Files (*.png *.jpg)"
+        # 저장할 디렉토리 선택
+        save_dir = QFileDialog.getExistingDirectory(
+            caption="Select Save Directory",
+            directory="."
         )
-        if filename:
+        if not save_dir:
+            return
+            
+        # 각 선택된 객체별로 export
+        for idx in selected_shapes:
+            polygon = shapes_layer.data[idx]
+            
+            # polygon → mask
+            mask = polygon2mask(self._image.shape[:2], polygon)
+            
+            # 원본 이미지에서 마스크 적용
+            masked = self._image.copy()
+            masked[~mask] = 0
+            
+            # bounding box로 crop
+            y_coords, x_coords = np.where(mask)
+            min_y, max_y = y_coords.min(), y_coords.max()
+            min_x, max_x = x_coords.min(), x_coords.max()
+            cropped = masked[min_y:max_y + 1, min_x:max_x + 1]
+            
+            # 파일 저장
+            filename = os.path.join(save_dir, f"object_{idx}.png")
             PILImageLib.fromarray(cropped).save(filename)
-            print(f"✅ 저장 완료: {filename}")
+            
+        print(f"✅ {len(selected_shapes)}개의 객체가 {save_dir}에 저장되었습니다.")
 
     def export_selected_polygon(self):
         shapes_layer = None
@@ -286,39 +268,50 @@ class SAMWidget(Container):
                 shapes_layer = layer
                 break
             
-        if shapes_layer is None or len(shapes_layer.selected_data) != 1:
-            print("❌ polygon 하나만 선택해주세요.")
+        if shapes_layer is None:
+            print("❌ Object Polygons 레이어가 없습니다.")
+            return
+            
+        selected_shapes = list(shapes_layer.selected_data)
+        if not selected_shapes:
+            print("❌ export할 객체를 선택해주세요.")
             return
         
-        selected_index = list(shapes_layer.selected_data)[0]
-        polygon = shapes_layer.data[selected_index]
-        face_color = shapes_layer.face_color[selected_index]
-        
-        # 캔버스 생성 (배경은 흰색)
-        canvas = np.ones((*self._image.shape[:2], 3), dtype=np.uint8) * 255
-        
-        # 마스크 생성
-        mask = polygon2mask(canvas.shape[:2], polygon)
-        
-        # RGB 색 변환 (0~1 → 0~255)
-        color_rgb = (np.array(face_color[:3]) * 255).astype(np.uint8)
-        for c in range(3):
-            canvas[..., c][mask] = color_rgb[c]
-            
-        # 바운딩 박스로 crop
-        y_coords, x_coords = np.where(mask)
-        min_y, max_y = y_coords.min(), y_coords.max()
-        min_x, max_x = x_coords.min(), x_coords.max()
-        cropped = canvas[min_y:max_y + 1, min_x:max_x + 1]
-        
-        # 저장
-        filename, _ = QFileDialog.getSaveFileName(
-            caption="Save Polygon as Image",
-            filter="Image Files (*.png *.jpg)"
+        # 저장할 디렉토리 선택
+        save_dir = QFileDialog.getExistingDirectory(
+            caption="Select Save Directory",
+            directory="."
         )
-        if filename:
+        if not save_dir:
+            return
+            
+        # 각 선택된 객체별로 export
+        for idx in selected_shapes:
+            polygon = shapes_layer.data[idx]
+            face_color = shapes_layer.face_color[idx]
+            
+            # 캔버스 생성 (배경은 흰색)
+            canvas = np.ones((*self._image.shape[:2], 3), dtype=np.uint8) * 255
+            
+            # 마스크 생성
+            mask = polygon2mask(canvas.shape[:2], polygon)
+            
+            # RGB 색 변환 (0~1 → 0~255)
+            color_rgb = (np.array(face_color[:3]) * 255).astype(np.uint8)
+            for c in range(3):
+                canvas[..., c][mask] = color_rgb[c]
+                
+            # 바운딩 박스로 crop
+            y_coords, x_coords = np.where(mask)
+            min_y, max_y = y_coords.min(), y_coords.max()
+            min_x, max_x = x_coords.min(), x_coords.max()
+            cropped = canvas[min_y:max_y + 1, min_x:max_x + 1]
+            
+            # 파일 저장
+            filename = os.path.join(save_dir, f"polygon_{idx}.png")
             PILImageLib.fromarray(cropped).save(filename)
-            print(f"✅ 단색 Polygon 저장 완료: {filename}")
+            
+        print(f"✅ {len(selected_shapes)}개의 polygon이 {save_dir}에 저장되었습니다.")
             
     def _on_auto_run(self) -> None:
         if self._image is None:
@@ -594,23 +587,3 @@ def cleanup():
             app.quit()
     except Exception as e:
         print(f"Cleanup error: {e}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
