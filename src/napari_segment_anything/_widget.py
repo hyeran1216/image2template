@@ -11,10 +11,14 @@ import napari
 import numpy as np
 import torch
 from magicgui.widgets import ComboBox, Container, PushButton, create_widget, Slider
-from napari.layers import Image, Points, Shapes
+from napari.layers import Image, Points, Shapes, Labels
 from napari.layers.shapes._shapes_constants import Mode
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QFileDialog, QApplication, QMessageBox
+from qtpy.QtGui import QFont
+from skimage.draw import polygon2mask
+from skimage.measure import find_contours
+from scipy.interpolate import splprep, splev
 
 from segment_anything import SamPredictor, sam_model_registry
 from segment_anything.automatic_mask_generator import SamAutomaticMaskGenerator
@@ -37,6 +41,37 @@ from .sd_inpaint import (
 
 # from segment_anything.utils.transforms import ResizeLongestSide
 
+
+def smooth_polygon(contour: np.ndarray, num_points: int = 100) -> np.ndarray:
+    """폴리곤을 부드럽게 처리하는 함수"""
+    if len(contour) < 3:
+        return contour  # 너무 짧으면 스킵
+
+    x = contour[:, 1]
+    y = contour[:, 0]
+    try:
+        tck, _ = splprep([x, y], s=3)
+        x_new, y_new = splev(np.linspace(0, 1, num_points), tck)
+        return np.vstack([y_new, x_new]).T
+    except Exception:
+        return contour  # 보간 실패 시 원본 리턴
+
+def close_polygon_if_needed(points: np.ndarray) -> np.ndarray:
+    """폴리곤이 닫혀있지 않으면 닫는 함수"""
+    if len(points) >= 3 and not np.allclose(points[0], points[-1]):
+        points = np.vstack([points, points[0]])
+    return points
+
+def mask_to_smoothed_contour(mask: np.ndarray) -> Optional[np.ndarray]:
+    """마스크에서 부드러운 외곽선을 추출하는 함수"""
+    blurred = cv2.GaussianBlur(mask.astype(np.uint8) * 255, (5, 5), 0)
+    contours, _ = cv2.findContours(blurred, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    largest = max(contours, key=cv2.contourArea)
+    epsilon = 0.005 * cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, epsilon, True)
+    return approx.reshape(-1, 2)
 
 class SAMWidget(Container):
     _sam: Sam
@@ -105,6 +140,11 @@ class SAMWidget(Container):
         self._export_polygon_btn = PushButton(text="Export Polygon as Image")
         self._export_polygon_btn.changed.connect(self.export_selected_polygon)
         self.append(self._export_polygon_btn)
+
+        # 브러시 확장 기능 추가
+        self._brush_btn = PushButton(text="Brush Extension")
+        self._brush_btn.changed.connect(self._on_brush_extension)
+        self.append(self._brush_btn)
 
         self._labels_layer = self._viewer.add_labels(
             data=np.zeros((256, 256), dtype=int),
@@ -321,26 +361,50 @@ class SAMWidget(Container):
         # SAM 파라미터 조정
         mask_gen = SamAutomaticMaskGenerator(
             self._sam,
-            points_per_side=32,
-            pred_iou_thresh=0.89,
-            stability_score_thresh=0.91,
+            points_per_side=48,
+            pred_iou_thresh=0.86,
+            stability_score_thresh=0.92,
             crop_n_layers=1,
             crop_n_points_downscale_factor=2,
-            min_mask_region_area=200
+            min_mask_region_area=100
+
+
+            
+            # points_per_batch = 64,
+            # stability_score_offset = 1.0,
+            # box_nms_thresh = 0.7,
+            # crop_n_layers  = 0,
+            # crop_nms_thresh = 0.7,
+            # crop_overlap_ratio = 512 / 1500,
+            # crop_n_points_downscale_factor = 1,
+            # point_grids = None,
+            # min_mask_region_area = 200,
+            
         )
         preds = mask_gen.generate(self._image)
 
-        # 중복 제거 및 필터링
+
+         # 필터링
         preds = self.filter_large_uniform_masks(preds, self._image)
-        
+
         # 객체 마스크 생성
         object_mask = np.zeros(self._image.shape[:2], dtype=bool)
+        
+        dilated_mask = np.zeros(self._image.shape[:2], dtype=bool)
         for pred in preds:
             object_mask |= pred["segmentation"]
-
-        # dilate된 마스크 (LaMa용)
-        kernel = np.ones((8,8 ), np.uint8)
-        dilated_mask = cv2.dilate(object_mask.astype(np.uint8), kernel, iterations=2).astype(bool)
+            seg = pred["segmentation"]
+            area = seg.sum()
+            # if area < 70:  # 작은 도형
+            #     kernel = np.ones((2, 2), np.uint8)
+            #     dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=1).astype(bool)
+            # if area < 1000:  # 중간 크기 도형
+            #     kernel = np.ones((3, 3), np.uint8)
+            #     dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=1).astype(bool)
+            # else:  # 큰 도형
+            kernel = np.ones((12, 12), np.uint8)
+            dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=3).astype(bool)
+            dilated_mask |= dilated  # or 연산으로 합치기
 
         background_mask = ~object_mask
 
@@ -351,19 +415,32 @@ class SAMWidget(Container):
         background_image[~background_mask] = 0
 
         # 기존 레이어 제거
-        for name in ["Objects", "Background", "Inpainted Background", "LAMA Inpainted Background"]:
+        for name in ["Objects", "LAMA Inpainted Background"]:
             if name in self._viewer.layers:
                 self._viewer.layers.remove(name)
 
         print("\n=== 배경 복원 시작 ===")
         try:
-            # 배경 복원
-            restored_bg = inpaint_image(
-                background_image.copy(),
-                dilated_mask,
-                method="lama"
-            )
-            
+            # 정사각형이 아니면 lama에 넣기 전에 정사각형으로 리사이즈 후 인페인팅
+            h, w = self._image.shape[:2]
+            if h != w:
+                print("⚠️ 정사각형이 아닌 이미지는 인페인팅 품질이 저하될 수 있습니다. 임시로 정사각형으로 리사이즈 후 복원합니다.")
+                new_size = (max(h, w), max(h, w))
+                resized_bg = cv2.resize(background_image, new_size)
+                resized_mask = cv2.resize(dilated_mask.astype(np.uint8), new_size, interpolation=cv2.INTER_NEAREST).astype(bool)
+                restored_bg = inpaint_image(
+                    resized_bg,
+                    resized_mask,
+                    method="lama"
+                )
+                # 결과를 다시 원본 크기로 리사이즈
+                restored_bg = cv2.resize(restored_bg, (w, h))
+            else:
+                restored_bg = inpaint_image(
+                    background_image.copy(),
+                    dilated_mask,
+                    method="lama"
+                )
             # 결과 레이어 추가
             self._viewer.add_image(
                 restored_bg,
@@ -373,17 +450,10 @@ class SAMWidget(Container):
             )
             print("배경 복원 완료!")
 
-
-            # 기존 레이어 추가
+            # 기존 레이어 추가 (Background 레이어는 추가하지 않음)
             self._viewer.add_image(
                 object_image,
                 name="Objects",
-                blending="additive",
-                visible=True
-            )
-            self._viewer.add_image(
-                background_image,
-                name="Background",
                 blending="additive",
                 visible=True
             )
@@ -396,12 +466,6 @@ class SAMWidget(Container):
             self._viewer.add_image(
                 object_image,
                 name="Objects",
-                blending="additive",
-                visible=True
-            )
-            self._viewer.add_image(
-                background_image,
-                name="Background",
                 blending="additive",
                 visible=True
             )
@@ -418,7 +482,7 @@ class SAMWidget(Container):
                 continue
 
             region_mask = labels == region_label
-            contours = find_contours(region_mask.astype(float), level=0.5)
+            contours = find_contours(region_mask.astype(float), level=0.1)
 
             pixels = self._image[region_mask].reshape(-1, 3)
 
@@ -578,6 +642,197 @@ class SAMWidget(Container):
         self._confirm_mask_btn.enabled = False
         self._cancel_annot_btn.enabled = False
 
+    def _on_brush_extension(self) -> None:
+        """polygon 또는 브러시 도구를 사용하여 영역을 확장하는 기능"""
+        if "Object Polygons" not in self._viewer.layers:
+            print("❌ Object Polygons 레이어가 없습니다.")
+            return
+
+        shapes_layer = self._viewer.layers["Object Polygons"]
+        selected_shapes = list(shapes_layer.selected_data)
+        if not selected_shapes:
+            print("❌ 확장할 polygon을 선택해주세요.")
+            return
+
+        # 기존 확장 레이어 제거
+        for name in ["Extension Polygon", "Brush Extension"]:
+            if name in self._viewer.layers:
+                self._viewer.layers.remove(name)
+
+        h, w = self._image.shape[:2]
+
+        # 브러시 레이어 생성
+        brush_layer = self._viewer.add_labels(
+            np.zeros((h, w), dtype=np.uint8),
+            name="Brush Extension"
+        )
+        brush_layer.brush_size = 20
+        brush_layer.mode = 'paint'  # 브러시 모드로 설정
+
+        # 폴리곤 레이어 생성
+        polygon_layer = self._viewer.add_shapes(
+            name="Extension Polygon",
+            shape_type='polygon',
+            edge_color='yellow',
+            face_color='yellow',
+            edge_width=2
+        )
+        polygon_layer.mode = 'add_polygon'
+
+        # 브러시 크기 조절 슬라이더
+        brush_slider = Slider(
+            value=20,
+            min=1,
+            max=100,
+            step=1,
+            label="Brush Size"
+        )
+        brush_slider.changed.connect(lambda size: setattr(brush_layer, 'brush_size', size))
+        self.append(brush_slider)
+
+        # 적용 버튼
+        apply_btn = PushButton(text="Apply Extension")
+        apply_btn.changed.connect(lambda: self._apply_polygon_extension(
+            shapes_layer,
+            selected_shapes,
+            polygon_layer if len(polygon_layer.data) > 0 else brush_layer
+        ))
+        self.append(apply_btn)
+
+        # Enter 키로 폴리곤 확정
+        def on_enter(event):
+            if polygon_layer.mode == 'add_polygon':
+                polygon_layer.mode = 'select'
+                print("✅ Extension polygon 그리기 완료. Apply 버튼을 눌러 병합하세요.")
+                return True
+            return False
+
+        self._viewer.bind_key('Enter', on_enter)
+
+    def _apply_polygon_extension(self, shapes_layer, selected_shapes, extension_layer) -> None:
+        """그려진 polygon 또는 브러시를 마스크로 변환하여 기존 객체와 병합"""
+        try:
+            h, w = self._image.shape[:2]
+
+            # 확장 마스크 추출
+            if hasattr(extension_layer, "shape_type"):  # polygon (Shapes 레이어)
+                if len(extension_layer.data) == 0:
+                    print("❌ 확장할 polygon이 없습니다.")
+                    return
+                extension_polygon = extension_layer.data[0]
+                extension_mask = polygon2mask((h, w), extension_polygon).astype(bool)
+                print("polygon 기반 확장 적용됨")
+            elif hasattr(extension_layer, "brush_size"):  # 브러시 (Labels 레이어)
+                extension_mask = extension_layer.data.astype(bool)
+                if extension_mask.sum() == 0:
+                    print("❌ 브러시로 색칠된 영역이 없습니다.")
+                    return
+                print("브러시 기반 확장 적용됨")
+
+            else:
+                print("❌ 알 수 없는 레이어 타입입니다.")
+                return
+            
+            # 선택된 polygon마다 병합 수행
+            for idx in selected_shapes:
+                print(f"\n▶ 처리 중인 polygon 인덱스: {idx}")
+                polygon = shapes_layer.data[idx]
+                original_mask = polygon2mask((h, w), polygon).astype(bool)
+
+                # 마스크 병합
+                combined_mask = np.logical_or(original_mask, extension_mask)
+                print(f"  병합된 마스크 True 개수: {combined_mask.sum()}")
+                
+                # 마스크에서 contour 추출
+                contours = find_contours(combined_mask.astype(float), level=0.5)
+                if not contours:
+                    print("❌ contour 추출 실패")
+                    continue
+                
+                # 가장 큰 contour 선택
+                new_contour = max(contours, key=lambda x: len(x))
+                new_contour = close_polygon_if_needed(new_contour)
+                print(f"  최종 polygon 포인트 수: {len(new_contour)}")
+                
+                # 스타일 유지 + polygon 갱신
+                face_color = shapes_layer.face_color[idx]
+                edge_color = shapes_layer.edge_color[idx]
+                shapes_layer.remove_selected()
+                
+                # new_contour를 올바른 형태로 변환
+                if len(new_contour.shape) == 2 and new_contour.shape[1] == 2:
+                    new_contour = new_contour.reshape(1, -1, 2)  # (1, N, 2) 형태로 변환
+                
+                shapes_layer.add(
+                    new_contour,
+                    shape_type='polygon',
+                    edge_color=edge_color,
+                    face_color=face_color,
+                    edge_width=4
+                )
+                print("polygon 업데이트 완료")
+                
+            shapes_layer.refresh()
+            
+            # 선택 상태 초기화
+            shapes_layer._value = (None, None)
+            shapes_layer._selected_data = set()
+            shapes_layer._selected_box = None
+            
+            # 레이어 제거 및 키 해제
+            if "Extension Polygon" in self._viewer.layers:
+                self._viewer.layers.remove("Extension Polygon")
+            if "Brush Extension" in self._viewer.layers:
+                self._viewer.layers.remove("Brush Extension")
+            
+            self._viewer.bind_key('Enter', None)
+            
+            # Apply 버튼과 Brush Size 슬라이더 제거
+            for widget in self:
+                if isinstance(widget, PushButton) and widget.text == "Apply Extension":
+                    self.remove(widget)
+                elif isinstance(widget, Slider) and widget.label == "Brush Size":
+                    self.remove(widget)
+                    
+            print("polygon 확장이 적용되었습니다.")
+
+        except Exception as e:
+            print(f"❌ polygon 확장 중 오류 발생: {e}")
+            import traceback
+            print(traceback.format_exc())
+
+    def smooth_polygon(self, contour: np.ndarray, num_points: int = 100) -> np.ndarray:
+        if len(contour) < 3:
+            return contour  # 너무 짧으면 스킵
+
+        x = contour[:, 1]
+        y = contour[:, 0]
+        try:
+            tck, _ = splprep([x, y], s=3)
+            x_new, y_new = splev(np.linspace(0, 1, num_points), tck)
+            return np.vstack([y_new, x_new]).T
+        except Exception:
+            return contour  # 보간 실패 시 원본 리턴
+
+def close_polygon_if_needed( points: np.ndarray) -> np.ndarray:
+    if len(points) >= 3 and not np.allclose(points[0], points[-1]):
+        points = np.vstack([points, points[0]])
+    return points
+
+def mask_to_smoothed_contour(mask: np.ndarray) -> Optional[np.ndarray]:
+    h, w = mask.shape
+    blurred = cv2.GaussianBlur(mask.astype(np.uint8) * 255, (5, 5), 0)
+    contours, _ = cv2.findContours(blurred, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    largest = max(contours, key=cv2.contourArea)
+    epsilon = 0.005 * cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, epsilon, True)
+    coords = approx.reshape(-1, 2)
+    return approx.reshape(-1, 2)
+
+
+
 import atexit
 @atexit.register
 def cleanup():
@@ -587,3 +842,54 @@ def cleanup():
             app.quit()
     except Exception as e:
         print(f"Cleanup error: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

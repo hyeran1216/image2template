@@ -45,6 +45,7 @@ def inpaint_with_lama(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
     global lama_model
     print("=== [DEBUG] inpaint_with_lama 진입 ===")
     print(f"[DEBUG] image.shape: {image.shape}, mask.shape: {mask.shape}")
+    
     try:
         # 이미지 shape 분기
         if len(image.shape) == 3 and image.shape[2] == 3:
@@ -81,14 +82,16 @@ def inpaint_with_lama(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
         print(f"[DEBUG] torch_image.shape: {torch_image.shape}, torch_mask.shape: {torch_mask.shape}")
         orig_h, orig_w = image.shape[0], image.shape[1]
         print(f"[DEBUG] 원본 크기: ({orig_h}, {orig_w})")
-        torch_image = pad_tensor_to_modulo(torch_image, 8)
-        torch_mask = pad_tensor_to_modulo(torch_mask, 8)
+        torch_image = pad_tensor_to_modulo(torch_image, 16)
+        torch_mask = pad_tensor_to_modulo(torch_mask, 16)
         print(f"[DEBUG] 패딩 후 torch_image.shape: {torch_image.shape}, torch_mask.shape: {torch_mask.shape}")
 
         print("[DEBUG] 배치 생성 완료")
         batch = {
             'image': torch_image.to(device),
-            'mask': torch_mask.to(device)
+            'mask': torch_mask.to(device),
+            'refine': True,  # Feature Refinement 활성화
+            'refine_num_iters': 5  # 리파인 반복 횟수
         }
 
         # LAMA 모델 로드 (한 번만)
