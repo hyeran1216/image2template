@@ -48,7 +48,7 @@ napari <your image path> -w napari-segment-anything 'Segment Anything'
 6.	개별 객체 선택 후 "Export Selected Object"을 누르면 단색의 다각형으로, "Export Polygon as Image"를 누르면 원본 객체 그대로가 저장됩니다.
 7.	결과는 File > Save > Save screenshot으로 png/jpg로 내보내거나 File > Save > Save all layers로 svg/ai 형태로 저장할 수 있습니다.
 
-🔍 예시 이미지 및 사용 영상은 docs/ 폴더 참고
+🔍 사용 영상은 docs/ 폴더 참고
 
 ---
 
