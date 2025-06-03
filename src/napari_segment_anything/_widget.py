@@ -80,6 +80,7 @@ class SAMWidget(Container):
     def __init__(self, viewer: napari.Viewer, model_type: str = "default"):
         super().__init__()
         self._viewer = viewer
+        #self._viewer.theme = 'light'  # 테마를 light로 설정
         if torch.cuda.is_available():
             self._device = "cuda"
         else:
@@ -113,6 +114,8 @@ class SAMWidget(Container):
         )
         self.append(self._kernel_size)
 
+        
+
         self._confirm_mask_btn = PushButton(
             text="Confirm Annot.",
             enabled=False,
@@ -132,6 +135,11 @@ class SAMWidget(Container):
         self._auto_segm_btn = PushButton(text="Auto. Segm.")
         self._auto_segm_btn.changed.connect(self._on_auto_run)
         self.append(self._auto_segm_btn)
+
+        # Start 버튼 추가 (2단계에서 구현)
+        self._start_btn = PushButton(text="Start")
+        self._start_btn.changed.connect(self._on_start)
+        self.append(self._start_btn)
 
         self._export_btn = PushButton(text="Export Selected Object")
         self._export_btn.changed.connect(self.export_selected_object)
@@ -176,6 +184,8 @@ class SAMWidget(Container):
         self._model_type_widget.changed.emit(model_type)
         self._viewer.bind_key("C", self._on_confirm_mask)
         self._viewer.bind_key("X", self._cancel_annot)
+
+        self._after_start = False  # Start 버튼 이후 상태 플래그
 
     def _load_model(self, model_type: str) -> None:
         self._sam = sam_model_registry[model_type](
@@ -260,16 +270,16 @@ class SAMWidget(Container):
         self._on_interactive_run()
 
     def export_selected_object(self):
-        if "Object Polygons" not in self._viewer.layers:
-            print("❌ Object Polygons 레이어가 없습니다.")
+        # Final Polygons 레이어에서 동작하도록 수정
+        layer_name = "Final Polygons"
+        if layer_name not in self._viewer.layers:
+            print(f"❌ {layer_name} 레이어가 없습니다.")
             return
-        
-        shapes_layer = self._viewer.layers["Object Polygons"]
+        shapes_layer = self._viewer.layers[layer_name]
         selected_shapes = list(shapes_layer.selected_data)
         if not selected_shapes:
             print("❌ export할 객체를 선택해주세요.")
             return
-        
         # 저장할 디렉토리 선택
         save_dir = QFileDialog.getExistingDirectory(
             caption="Select Save Directory",
@@ -277,255 +287,130 @@ class SAMWidget(Container):
         )
         if not save_dir:
             return
-            
-        # 각 선택된 객체별로 export
         for idx in selected_shapes:
             polygon = shapes_layer.data[idx]
-            
-            # polygon → mask
             mask = polygon2mask(self._image.shape[:2], polygon)
+            # RGBA 이미지 생성 (알파 채널 추가)
+            rgba_image = np.zeros((*self._image.shape[:2], 4), dtype=np.uint8)
+            # RGB 채널에 원본 이미지 복사 (마스크가 True인 부분만)
+            for c in range(3):
+                rgba_image[..., c][mask] = self._image[..., c][mask]
+            # 알파 채널 설정 (마스크가 True인 부분만 255, 나머지는 0)
+            rgba_image[..., 3] = mask.astype(np.uint8) * 255
             
-            # 원본 이미지에서 마스크 적용
-            masked = self._image.copy()
-            masked[~mask] = 0
-            
-            # bounding box로 crop
             y_coords, x_coords = np.where(mask)
             min_y, max_y = y_coords.min(), y_coords.max()
             min_x, max_x = x_coords.min(), x_coords.max()
-            cropped = masked[min_y:max_y + 1, min_x:max_x + 1]
-            
-            # 파일 저장
+            cropped = rgba_image[min_y:max_y + 1, min_x:max_x + 1]
             filename = os.path.join(save_dir, f"object_{idx}.png")
             PILImageLib.fromarray(cropped).save(filename)
-            
         print(f"✅ {len(selected_shapes)}개의 객체가 {save_dir}에 저장되었습니다.")
 
     def export_selected_polygon(self):
+        # Final Polygons 레이어에서 동작하도록 수정
+        layer_name = "Final Polygons"
         shapes_layer = None
         for layer in self._viewer.layers:
-            if isinstance(layer, Shapes) and layer.name == "Object Polygons":
+            if isinstance(layer, Shapes) and layer.name == layer_name:
                 shapes_layer = layer
                 break
-            
         if shapes_layer is None:
-            print("❌ Object Polygons 레이어가 없습니다.")
+            print(f"❌ {layer_name} 레이어가 없습니다.")
             return
-            
         selected_shapes = list(shapes_layer.selected_data)
         if not selected_shapes:
             print("❌ export할 객체를 선택해주세요.")
             return
-        
-        # 저장할 디렉토리 선택
         save_dir = QFileDialog.getExistingDirectory(
             caption="Select Save Directory",
             directory="."
         )
         if not save_dir:
             return
-            
-        # 각 선택된 객체별로 export
         for idx in selected_shapes:
             polygon = shapes_layer.data[idx]
             face_color = shapes_layer.face_color[idx]
-            
-            # 캔버스 생성 (배경은 흰색)
-            canvas = np.ones((*self._image.shape[:2], 3), dtype=np.uint8) * 255
-            
+            # RGBA 이미지 생성 (알파 채널 추가)
+            rgba_image = np.zeros((*self._image.shape[:2], 4), dtype=np.uint8)
             # 마스크 생성
-            mask = polygon2mask(canvas.shape[:2], polygon)
-            
-            # RGB 색 변환 (0~1 → 0~255)
+            mask = polygon2mask(rgba_image.shape[:2], polygon)
+            # RGB 채널에 색상 설정 (마스크가 True인 부분만)
             color_rgb = (np.array(face_color[:3]) * 255).astype(np.uint8)
             for c in range(3):
-                canvas[..., c][mask] = color_rgb[c]
-                
-            # 바운딩 박스로 crop
+                rgba_image[..., c][mask] = color_rgb[c]
+            # 알파 채널 설정 (마스크가 True인 부분만 255, 나머지는 0)
+            rgba_image[..., 3] = mask.astype(np.uint8) * 255
+            
             y_coords, x_coords = np.where(mask)
             min_y, max_y = y_coords.min(), y_coords.max()
             min_x, max_x = x_coords.min(), x_coords.max()
-            cropped = canvas[min_y:max_y + 1, min_x:max_x + 1]
-            
-            # 파일 저장
+            cropped = rgba_image[min_y:max_y + 1, min_x:max_x + 1]
             filename = os.path.join(save_dir, f"polygon_{idx}.png")
             PILImageLib.fromarray(cropped).save(filename)
-            
         print(f"✅ {len(selected_shapes)}개의 polygon이 {save_dir}에 저장되었습니다.")
-            
+
     def _on_auto_run(self) -> None:
         if self._image is None:
             return
         print("\n=== 마스크 생성 시작 ===")
 
+        contrast_img = cv2.convertScaleAbs(self._image, alpha=1.2, beta=0)
+
         # SAM 파라미터 조정
         mask_gen = SamAutomaticMaskGenerator(
             self._sam,
             points_per_side=48,
-            pred_iou_thresh=0.86,
-            stability_score_thresh=0.92,
+            pred_iou_thresh=0.86,#86
+            stability_score_thresh=0.92,# 88
             crop_n_layers=1,
             crop_n_points_downscale_factor=2,
             min_mask_region_area=100
-
-
-            
-            # points_per_batch = 64,
-            # stability_score_offset = 1.0,
-            # box_nms_thresh = 0.7,
-            # crop_n_layers  = 0,
-            # crop_nms_thresh = 0.7,
-            # crop_overlap_ratio = 512 / 1500,
-            # crop_n_points_downscale_factor = 1,
-            # point_grids = None,
-            # min_mask_region_area = 200,
-            
         )
-        preds = mask_gen.generate(self._image)
+        preds = mask_gen.generate(contrast_img)
 
-
-         # 필터링
+        # filter_large_uniform_masks로 객체 선별
         preds = self.filter_large_uniform_masks(preds, self._image)
 
-        # 객체 마스크 생성
-        object_mask = np.zeros(self._image.shape[:2], dtype=bool)
-        
-        dilated_mask = np.zeros(self._image.shape[:2], dtype=bool)
-        for pred in preds:
-            object_mask |= pred["segmentation"]
-            seg = pred["segmentation"]
-            area = seg.sum()
-            # if area < 70:  # 작은 도형
-            #     kernel = np.ones((2, 2), np.uint8)
-            #     dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=1).astype(bool)
-            # if area < 1000:  # 중간 크기 도형
-            #     kernel = np.ones((3, 3), np.uint8)
-            #     dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=1).astype(bool)
-            # else:  # 큰 도형
-            kernel = np.ones((12, 12), np.uint8)
-            dilated = cv2.dilate(seg.astype(np.uint8), kernel, iterations=3).astype(bool)
-            dilated_mask |= dilated  # or 연산으로 합치기
-
-        background_mask = ~object_mask
-
-        # 객체 이미지와 배경 이미지 생성
-        object_image = self._image.copy()
-        object_image[~object_mask] = 0
-        background_image = self._image.copy()
-        background_image[~background_mask] = 0
-
-        # 기존 레이어 제거
-        for name in ["Objects", "LAMA Inpainted Background"]:
-            if name in self._viewer.layers:
-                self._viewer.layers.remove(name)
-
-        print("\n=== 배경 복원 시작 ===")
-        try:
-            # 정사각형이 아니면 lama에 넣기 전에 정사각형으로 리사이즈 후 인페인팅
-            h, w = self._image.shape[:2]
-            if h != w:
-                print("⚠️ 정사각형이 아닌 이미지는 인페인팅 품질이 저하될 수 있습니다. 임시로 정사각형으로 리사이즈 후 복원합니다.")
-                new_size = (max(h, w), max(h, w))
-                resized_bg = cv2.resize(background_image, new_size)
-                resized_mask = cv2.resize(dilated_mask.astype(np.uint8), new_size, interpolation=cv2.INTER_NEAREST).astype(bool)
-                restored_bg = inpaint_image(
-                    resized_bg,
-                    resized_mask,
-                    method="lama"
-                )
-                # 결과를 다시 원본 크기로 리사이즈
-                restored_bg = cv2.resize(restored_bg, (w, h))
-            else:
-                restored_bg = inpaint_image(
-                    background_image.copy(),
-                    dilated_mask,
-                    method="lama"
-                )
-            # 결과 레이어 추가
-            self._viewer.add_image(
-                restored_bg,
-                name="LAMA Inpainted Background",
-                blending="additive",
-                visible=True
-            )
-            print("배경 복원 완료!")
-
-            # 기존 레이어 추가 (Background 레이어는 추가하지 않음)
-            self._viewer.add_image(
-                object_image,
-                name="Objects",
-                blending="additive",
-                visible=True
-            )
-            
-        except Exception as e:
-            print(f"배경 복원 실패: {e}")
-            import traceback
-            print(traceback.format_exc())
-            # 실패 시 기존 방식으로 폴백
-            self._viewer.add_image(
-                object_image,
-                name="Objects",
-                blending="additive",
-                visible=True
-            )
-
-        # 객체 분리
-        # === 객체 외곽 polygon을 shapes로 시각화 ===
-        labels = label(object_mask)
+        # 각 pred에서 contour(폴리곤) 추출
+        from skimage.measure import find_contours
         polygons = []
-        face_colors =[]
-        edge_colors =[]
-        
-        for region_label in np.unique(labels):
-            if region_label == 0:
-                continue
-
-            region_mask = labels == region_label
-            contours = find_contours(region_mask.astype(float), level=0.1)
-
-            pixels = self._image[region_mask].reshape(-1, 3)
-
-            r_mode = mode(pixels[:, 0], keepdims=False).mode
-            g_mode = mode(pixels[:, 1], keepdims=False).mode
-            b_mode = mode(pixels[:, 2], keepdims=False).mode
-
-            dominant_color = (r_mode / 255.0, g_mode / 255.0, b_mode / 255.0)
-
+        for pred in preds:
+            seg = pred["segmentation"]
+            # Threshold 적용
+            contours = find_contours(seg, level=0.3)
             for contour in contours:
                 polygons.append(contour)
-                face_colors.append(dominant_color)
-                edge_colors.append(dominant_color)
-                
-        if "Object Polygons" in self._viewer.layers:
-            self._viewer.layers.remove("Object Polygons")
+        
+        # 2
+        # 객체 마스크 생성
+        # polygons=[]
+        # object_mask = np.zeros(self._image.shape[:2], dtype=bool)
+        # for pred in preds:
+        #     object_mask |= pred["segmentation"]
+        # labels = label(object_mask)
+        # for region_label in np.unique(labels):
+        #     if region_label == 0:
+        #         continue
 
-        shapes_layer = self._viewer.add_shapes(
+        #     region_mask = labels == region_label
+        #     contours = find_contours(region_mask.astype(float), level=0.1) # 0.1 ~0.5
+        #     for contour in contours:
+        #         polygons.append(contour)
+
+
+        # 기존 Editable Polygons 레이어 제거/초기화
+        if "Editable Polygons" in self._viewer.layers:
+            self._viewer.layers.remove("Editable Polygons")
+        editable_layer = self._viewer.add_shapes(
             data=polygons,
             shape_type='polygon',
+            name="Editable Polygons",
+            edge_color='yellow',
+            face_color='transparent',
             edge_width=2,
-            edge_color= edge_colors,
-            face_color=face_colors,
-            name="Object Polygons"
         )
-        shapes_layer.mode = 'select'
-        
-    def filter_large_uniform_masks(self,preds, image, min_area_ratio=0.1):
-        h, w = image.shape[:2]
-        total_pixels = h * w
-        filtered = []
-        for pred in preds:
-            seg = pred["segmentation"]
-            area = seg.sum()
-            # # 넓은 마스크는 무조건 배경으로 간주하지 않음 → 객체일 수 있음
-            # if area < total_pixels * min_area_ratio:
-            #     filtered.append(pred)  # 작은 것들만 객체로 포함
-            if area >= total_pixels * min_area_ratio:
-                continue  # 넓은 건 제거
-            filtered.append(pred)
-        return filtered
-    
-
+        editable_layer.mode = 'select'
+        print("Editable Polygons 레이어가 생성되었습니다. 폴리곤을 자유롭게 수정하세요.\nStart 버튼을 누르면 인페인팅이 실행됩니다.")
 
     def _on_confirm_mask(self, _: Optional[Any] = None) -> None:
         if not self._confirm_mask_btn.enabled:
@@ -533,105 +418,84 @@ class SAMWidget(Container):
 
         mask = self._mask_layer.data
         if np.any(mask > 0):
-            # 객체 레이블링
             labels = label(mask)
             polygons = []
-            face_colors = []
-            edge_colors = []
-            
-            # 각 객체별로 처리
             for region_label in np.unique(labels):
-                if region_label == 0:  # 배경은 건너뛰기
+                if region_label == 0:
                     continue
-                    
-                # 현재 객체의 마스크
                 region_mask = labels == region_label
-                
-                # 마스크를 약간 축소 (edge가 안쪽으로만 보이도록)
-                kernel = np.ones((3,3), np.uint8)
-                eroded_mask = cv2.erode(region_mask.astype(np.uint8), kernel, iterations=2)
-                
-                # 축소된 마스크의 contour 찾기
-                contours = find_contours(eroded_mask.astype(float), level=0.5)
-                
-                # 현재 객체의 픽셀 가져오기
-                pixels = self._image[region_mask]
-                
-                # RGB 값을 문자열로 변환하여 최빈값 계산
-                pixel_strs = [f"{r},{g},{b}" for r, g, b in pixels]
-                most_common = mode(pixel_strs, keepdims=False).mode
-                
-                # 최빈값 RGB를 파싱
-                r_mode, g_mode, b_mode = map(int, most_common.split(','))
-                
-                # RGB 값을 0~1 범위로 정규화
-                face_color = (r_mode / 255.0, g_mode / 255.0, b_mode / 255.0)
-                
-                # 각 contour마다 개별적으로 처리
+                from skimage.measure import find_contours
+                contours = find_contours(region_mask.astype(float), level=0.5)
                 for contour in contours:
-                    # contour 좌표를 정수로 변환
-                    contour_int = contour.astype(int)
-                    
-                    # 현재 contour의 경계선 색상 수집
-                    boundary_colors = []
-                    for y, x in contour_int:
-                        if 0 <= y < self._image.shape[0] and 0 <= x < self._image.shape[1]:
-                            boundary_colors.append(self._image[y, x])
-                    
-                    # 현재 contour의 경계선 색상 최빈값 계산
-                    if boundary_colors:
-                        boundary_strs = [f"{r},{g},{b}" for r, g, b in boundary_colors]
-                        most_common_boundary = mode(boundary_strs, keepdims=False).mode
-                        r_edge, g_edge, b_edge = map(int, most_common_boundary.split(','))
-                        edge_color = (r_edge / 255.0, g_edge / 255.0, b_edge / 255.0)
-                    else:
-                        edge_color = face_color  # 경계선 색상을 찾지 못한 경우 face_color 사용
-                    
-                    # 현재 contour 추가
                     polygons.append(contour)
-                    face_colors.append(face_color)
-                    edge_colors.append(edge_color)
-            
-            # 기존 shape layer 찾기 또는 새로 생성
-            shapes_layer = None
-            for layer in self._viewer.layers:
-                if isinstance(layer, Shapes) and layer.name == "Object Polygons":
-                    shapes_layer = layer
-                    break
-                    
-            if shapes_layer is None:
-                # 모든 contours를 한 번에 추가
-                shapes_layer = self._viewer.add_shapes(
-                    data=polygons,
-                    shape_type='polygon',
-                    edge_width=4,  # edge_width 증가
-                    edge_color=edge_colors,
-                    face_color=face_colors,
-                    name="Object Polygons"
-                )
-                # 모드 설정은 layer가 완전히 생성된 후에
-                shapes_layer.mode = 'select'
-            else:
-                # 기존 layer에 새로운 contours 추가
-                for i, contour in enumerate(polygons):
-                    shapes_layer.add(
-                        contour,
-                        shape_type='polygon',
-                        edge_color=edge_colors[i],
-                        face_color=face_colors[i],
-                        edge_width=4  # edge_width 증가
-                    )
-            
-            # 마스크 초기화
-            self._mask_layer.data = np.zeros_like(mask)
 
+            if not self._after_start:
+                # Start 이전: Editable Polygons에 (투명+노란색) 폴리곤 추가
+                if "Editable Polygons" not in self._viewer.layers:
+                    shapes_layer = self._viewer.add_shapes(
+                        data=[],
+                        shape_type='polygon',
+                        name="Editable Polygons",
+                        edge_color='yellow',
+                        face_color='transparent',
+                        edge_width=2,
+                    )
+                else:
+                    shapes_layer = self._viewer.layers["Editable Polygons"]
+                for poly in polygons:
+                    shapes_layer.add(
+                        poly,
+                        shape_type='polygon',
+                        edge_color='yellow',
+                        face_color='transparent',
+                        edge_width=2
+                    )
+                print("Editable Polygons에 투명+노란색 폴리곤이 추가되었습니다.")
+            else:
+                # Start 이후: 기존 SAM Point 기능(최빈색 등)
+                face_colors = []
+                edge_colors = []
+                h, w = self._image.shape[:2]
+                for poly in polygons:
+                    poly_mask = polygon2mask((h, w), poly)
+                    pixels = self._image[poly_mask]
+                    if len(pixels) == 0:
+                        face_colors.append((1, 1, 0))
+                        edge_colors.append((1, 1, 0))
+                        continue
+                    from scipy.stats import mode
+                    pixel_strs = [f"{r},{g},{b}" for r, g, b in pixels]
+                    most_common = mode(pixel_strs, keepdims=False).mode
+                    r_mode, g_mode, b_mode = map(int, most_common.split(','))
+                    color = (r_mode / 255.0, g_mode / 255.0, b_mode / 255.0)
+                    face_colors.append(color)
+                    edge_colors.append(color)
+                if "Final Polygons" not in self._viewer.layers:
+                    shapes_layer = self._viewer.add_shapes(
+                        data=polygons,
+                        shape_type='polygon',
+                        name="Final Polygons",
+                        edge_color=edge_colors,
+                        face_color=face_colors,
+                        edge_width=2,
+                    )
+                else:
+                    shapes_layer = self._viewer.layers["Final Polygons"]
+                    for i, poly in enumerate(polygons):
+                        shapes_layer.add(
+                            poly,
+                            shape_type='polygon',
+                            edge_color=edge_colors[i],
+                            face_color=face_colors[i],
+                            edge_width=2
+                        )
+                print("Final Polygons에 객체별 최빈색 폴리곤이 추가되었습니다.")
 
         self._confirm_mask_btn.enabled = False
         self._cancel_annot_btn.enabled = False
         self._pts_layer.data = []
         self._boxes_layer.data = []
         self._logits = None
-
 
     def _cancel_annot(self, _: Optional[Any] = None) -> None:
         # boxes must be reset first because of how of points data update signal
@@ -643,12 +507,12 @@ class SAMWidget(Container):
         self._cancel_annot_btn.enabled = False
 
     def _on_brush_extension(self) -> None:
-        """polygon 또는 브러시 도구를 사용하여 영역을 확장하는 기능"""
-        if "Object Polygons" not in self._viewer.layers:
-            print("❌ Object Polygons 레이어가 없습니다.")
+        """polygon 또는 브러시 도구를 사용하여 영역을 확장하는 기능 (Final Polygons 전용)"""
+        if "Final Polygons" not in self._viewer.layers:
+            print("❌ Final Polygons 레이어가 없습니다. 먼저 Start를 실행하세요.")
             return
 
-        shapes_layer = self._viewer.layers["Object Polygons"]
+        shapes_layer = self._viewer.layers["Final Polygons"]
         selected_shapes = list(shapes_layer.selected_data)
         if not selected_shapes:
             print("❌ 확장할 polygon을 선택해주세요.")
@@ -800,6 +664,21 @@ class SAMWidget(Container):
             print(f"❌ polygon 확장 중 오류 발생: {e}")
             import traceback
             print(traceback.format_exc())
+    def filter_large_uniform_masks(self,preds, image, min_area_ratio=0.1):
+        h, w = image.shape[:2]
+        total_pixels = h * w
+        filtered = []
+        for pred in preds:
+            seg = pred["segmentation"]
+            area = seg.sum()
+            # # 넓은 마스크는 무조건 배경으로 간주하지 않음 → 객체일 수 있음
+            # if area < total_pixels * min_area_ratio:
+            #     filtered.append(pred)  # 작은 것들만 객체로 포함
+            if area >= total_pixels * min_area_ratio:
+                continue  # 넓은 건 제거
+            filtered.append(pred)
+        return filtered
+    
 
     def smooth_polygon(self, contour: np.ndarray, num_points: int = 100) -> np.ndarray:
         if len(contour) < 3:
@@ -813,6 +692,72 @@ class SAMWidget(Container):
             return np.vstack([y_new, x_new]).T
         except Exception:
             return contour  # 보간 실패 시 원본 리턴
+
+    def _on_start(self):
+        print("Start 버튼이 눌렸습니다.")
+        self._after_start = True  # Start 이후 플래그 설정
+        # 1. Editable Polygons 레이어에서 폴리곤 정보 가져오기
+        if "Editable Polygons" not in self._viewer.layers:
+            print("Editable Polygons 레이어가 없습니다.")
+            return
+        editable_layer = self._viewer.layers["Editable Polygons"]
+        h, w = self._image.shape[:2]
+        polygons = list(editable_layer.data)
+        if not polygons:
+            print("폴리곤 데이터가 없습니다.")
+            return
+
+        # 2. mask로 변환 (여러 폴리곤 합치기)
+        mask = np.zeros((h, w), dtype=bool)
+        for poly in polygons:
+            mask |= polygon2mask((h, w), poly)
+
+        # 3. dilate
+        kernel = np.ones((12, 12), np.uint8)
+        dilated_mask = cv2.dilate(mask.astype(np.uint8), kernel, iterations=2).astype(bool)
+
+        # 4. LaMa 인페인팅 (정사각형 보정)
+        if h != w:
+            print("⚠️ 정사각형이 아닌 이미지는 인페인팅 품질이 저하될 수 있습니다. 임시로 정사각형으로 리사이즈 후 복원합니다.")
+            new_size = (max(h, w), max(h, w))
+            resized_img = cv2.resize(self._image, new_size)
+            resized_mask = cv2.resize(dilated_mask.astype(np.uint8), new_size, interpolation=cv2.INTER_NEAREST).astype(bool)
+            inpainted = inpaint_image(resized_img, resized_mask, method="lama")
+            inpainted = cv2.resize(inpainted, (w, h))
+        else:
+            inpainted = inpaint_image(self._image, dilated_mask, method="lama")
+        self._viewer.add_image(inpainted, name="LAMA Inpainted Background", blending="additive", visible=True)
+
+        # 5. 객체별로 최빈색(face_color, edge_color) 계산해서 최종 폴리곤 레이어 추가
+        face_colors = []
+        edge_colors = []
+        for poly in polygons:
+            poly_mask = polygon2mask((h, w), poly)
+            pixels = self._image[poly_mask]
+            if len(pixels) == 0:
+                face_colors.append((1, 1, 0))  # fallback: yellow
+                edge_colors.append((1, 1, 0))
+                continue
+            # 최빈값 계산
+            pixel_strs = [f"{r},{g},{b}" for r, g, b in pixels]
+            most_common = mode(pixel_strs, keepdims=False).mode
+            r_mode, g_mode, b_mode = map(int, most_common.split(','))
+            color = (r_mode / 255.0, g_mode / 255.0, b_mode / 255.0)
+            face_colors.append(color)
+            edge_colors.append(color)
+
+        # 기존 Final Polygons 레이어 제거
+        if "Final Polygons" in self._viewer.layers:
+            self._viewer.layers.remove("Final Polygons")
+        self._viewer.add_shapes(
+            data=polygons,
+            shape_type='polygon',
+            name="Final Polygons",
+            edge_color=edge_colors,
+            face_color=face_colors,
+            edge_width=2,
+        )
+        print("최종 폴리곤 레이어가 추가되었습니다.")
 
 def close_polygon_if_needed( points: np.ndarray) -> np.ndarray:
     if len(points) >= 3 and not np.allclose(points[0], points[-1]):
@@ -831,6 +776,7 @@ def mask_to_smoothed_contour(mask: np.ndarray) -> Optional[np.ndarray]:
     coords = approx.reshape(-1, 2)
     return approx.reshape(-1, 2)
 
+    
 
 
 import atexit
