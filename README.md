@@ -69,7 +69,7 @@ image2template/
 ├── requirements.txt
 ├── README.md
 └── docs/
-    ├── usage.gif
+    ├── 시연영상.mov
     └── example_result.png
     
 ```
