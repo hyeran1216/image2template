@@ -40,6 +40,7 @@ napari <your image path> -w napari-segment-anything 'Segment Anything'
 
 ## 사용법 요약
 
+
 1.	이미지를 불러온 후 우측의 "Auto. Segm."를 누르면 모든 객체 자동 분리를 시작합니다.
 2.	Editable polygon에서 분리할 객체와 배경으로 남길 객체를 선택할 수 있습니다.
 3.	분리가 끝나면 "Final polygons" layer에서 개별 객체의 위치/크기/색상을 조정할 수 있습니다.
@@ -62,13 +63,15 @@ image2template/
 │   └── napari_segment_anything/
 │       ├── _widget.py           # 주요 위젯 및 UI 동작
 │       ├── utils/               # 도우미 함수들
-│       ├── sd_inpaint.py        # LaMa 모델을 사용한 이미지 인페인팅 구현
+│       ├── lama_inpaint.py      # LaMa 모델을 사용한 이미지 인페인팅 구현
+│       ├── sd_inpaint.py        # Stable Diffusion을 사용한 이미지 인페인팅 구현
 │       └── ...
 ├── requirements.txt
 ├── README.md
 └── docs/
     ├── usage.gif
     └── example_result.png
+    
 ```
 
 ---
