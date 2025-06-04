@@ -42,11 +42,12 @@ napari <your image path> -w napari-segment-anything 'Segment Anything'
 
 1.	이미지를 불러온 후 우측의 "Auto. Segm."를 누르면 모든 객체 자동 분리를 시작합니다.
 2.	Editable polygon에서 분리할 객체와 배경으로 남길 객체를 선택할 수 있습니다.
-3.	분리가 끝나면 "Object Polygons" layer에서 개별 객체의 위치/크기/색상을 조정할 수 있습니다.
-4.	Brush Extension 또는 Polygon Extension 기능으로 원하는 객체를 확장하거나 수정할 수 있습니다.
+3.	분리가 끝나면 "Final polygons" layer에서 개별 객체의 위치/크기/색상을 조정할 수 있습니다.
+4.	"Final polygons" layer에서 객체 선택후 Brush Extension 또는 Polygon Extension 버튼을 클릭하여 원하는 객체를 확장하거나 수정할 수 있습니다.
 5.	객체들이 제거된 배경은 "LAMA Inpainted Background" layer에 저장됩니다.
 6.	개별 객체 선택 후 "Export Selected Object"을 누르면 단색의 다각형으로, "Export Polygon as Image"를 누르면 원본 객체 그대로가 저장됩니다.
-7.	결과는 File > Save > Save screenshot으로 png/jpg로 내보내거나 File > Save > Save all layers로 svg/ai 형태로 저장할 수 있습니다.
+7.  Text Layer 플러그인을 사용하여 텍스트의 크기·각도·색상을 조정할 수 있습니다.
+8.	결과는 File > Save > Save screenshot으로 png/jpg로 내보내거나 File > Save > Save all layers로 svg/ai 형태로 저장할 수 있습니다.
 
 🔍 사용 영상은 docs/ 폴더 참고
 
@@ -61,8 +62,7 @@ image2template/
 │   └── napari_segment_anything/
 │       ├── _widget.py           # 주요 위젯 및 UI 동작
 │       ├── utils/               # 도우미 함수들
-│       ├── lama_inpaint.py      #
-│       ├── sd_inpaint.py        #
+│       ├── sd_inpaint.py        # LaMa 모델을 사용한 이미지 인페인팅 구현
 │       └── ...
 ├── requirements.txt
 ├── README.md
