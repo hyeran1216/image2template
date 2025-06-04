@@ -93,4 +93,4 @@ image2template/
 ---
 
 ## 라이선스
-[Apache Software License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 라이선스 조건에 따라 배포되는 "napari-segment-anything"은 무료 오픈 소스 소프트웨어입니다.
+[Apache Software License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 라이선스 조건에 따라 배포되는 "image2template"은 무료 오픈 소스 소프트웨어입니다.
