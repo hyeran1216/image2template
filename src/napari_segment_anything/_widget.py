@@ -370,7 +370,9 @@ class SAMWidget(Container):
 
         # filter_large_uniform_masks로 객체 선별
         preds = self.filter_large_uniform_masks(preds, self._image)
-
+        #1
+        #2
+        #3
         # # 각 pred에서 contour(폴리곤) 추출
         # from skimage.measure import find_contours
         # polygons = []
@@ -410,7 +412,6 @@ class SAMWidget(Container):
             edge_width=2,
         )
         editable_layer.mode = 'select'
-        print("Editable Polygons 레이어가 생성되었습니다. 폴리곤을 자유롭게 수정하세요.\nStart 버튼을 누르면 인페인팅이 실행됩니다.")
 
     def _on_confirm_mask(self, _: Optional[Any] = None) -> None:
         if not self._confirm_mask_btn.enabled:
@@ -450,7 +451,6 @@ class SAMWidget(Container):
                         face_color='transparent',
                         edge_width=2
                     )
-                print("Editable Polygons에 투명+노란색 폴리곤이 추가되었습니다.")
             else:
                 # Start 이후: 기존 SAM Point 기능(최빈색 등)
                 face_colors = []
