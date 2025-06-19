@@ -361,7 +361,7 @@ class SAMWidget(Container):
             self._sam,
             points_per_side=48,
             pred_iou_thresh=0.86,#86
-            stability_score_thresh=0.92,# 88
+            stability_score_thresh=0.95,# 88
             crop_n_layers=1,
             crop_n_points_downscale_factor=2,
             min_mask_region_area=100
@@ -371,31 +371,31 @@ class SAMWidget(Container):
         # filter_large_uniform_masks로 객체 선별
         preds = self.filter_large_uniform_masks(preds, self._image)
 
-        # 각 pred에서 contour(폴리곤) 추출
-        from skimage.measure import find_contours
-        polygons = []
-        for pred in preds:
-            seg = pred["segmentation"]
-            # Threshold 적용
-            contours = find_contours(seg, level=0.3)
-            for contour in contours:
-                polygons.append(contour)
-        
-        # 2
-        # 객체 마스크 생성
-        # polygons=[]
-        # object_mask = np.zeros(self._image.shape[:2], dtype=bool)
+        # # 각 pred에서 contour(폴리곤) 추출
+        # from skimage.measure import find_contours
+        # polygons = []
         # for pred in preds:
-        #     object_mask |= pred["segmentation"]
-        # labels = label(object_mask)
-        # for region_label in np.unique(labels):
-        #     if region_label == 0:
-        #         continue
-
-        #     region_mask = labels == region_label
-        #     contours = find_contours(region_mask.astype(float), level=0.1) # 0.1 ~0.5
+        #     seg = pred["segmentation"]
+        #     # Threshold 적용
+        #     contours = find_contours(seg, level=0.5)
         #     for contour in contours:
         #         polygons.append(contour)
+        
+        # 2
+        # # # 객체 마스크 생성
+        polygons=[]
+        object_mask = np.zeros(self._image.shape[:2], dtype=bool)
+        for pred in preds:
+            object_mask |= pred["segmentation"]
+        labels = label(object_mask)
+        for region_label in np.unique(labels):
+            if region_label == 0:
+                continue
+
+            region_mask = labels == region_label
+            contours = find_contours(region_mask.astype(float), level=0.5) # 0.1 ~0.5
+            for contour in contours:
+                polygons.append(contour)
 
 
         # 기존 Editable Polygons 레이어 제거/초기화
