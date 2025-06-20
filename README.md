@@ -50,7 +50,9 @@ napari <your image path> -w napari-segment-anything 'Segment Anything'
 7.  Text Layer 플러그인을 사용하여 텍스트의 크기·각도·색상을 조정할 수 있습니다.
 8.	결과는 File > Save > Save screenshot으로 png/jpg로 내보내거나 File > Save > Save all layers로 svg/ai 형태로 저장할 수 있습니다.
 
-🔍 사용 영상은 docs/ 폴더 참고
+https://www.youtube.com/watch?v=LHBGCCF6A94
+
+🔍 추가 사용 영상은 docs/ 폴더 참고
 
 ---
 
